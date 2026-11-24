@@ -10,7 +10,6 @@ from sklearn.metrics import accuracy_score, classification_report
 from xgboost import XGBClassifier
 
 
-
 DATA_PATH = "读取保存的文件"
 RANDOM_STATE = 42
 TYPE_LIST = [
@@ -135,7 +134,6 @@ def parse_vector(value):
 
     except Exception:
         return None
-
 
 data[VECTOR_COL] = (
     data[VECTOR_COL]
