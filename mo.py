@@ -5,11 +5,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.decomposition import PCA
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix
-)
+from sklearn.metrics import accuracy_score, classification_report
 
 from xgboost import XGBClassifier
 
@@ -33,11 +29,6 @@ TYPE_MAPPING = {
     name: i
     for i, name in enumerate(TYPE_LIST)
 }
-ID_TO_TYPE = {
-    i: name
-    for name, i in TYPE_MAPPING.items()
-}
-
 for name, number in TYPE_MAPPING.items():
     print(f"{name} -> {number}")
 
@@ -60,6 +51,7 @@ NUMERIC_FEATURES = [
 
 ORIGIN_TYPE_COL = "origin_type"
 VECTOR_COL = "origin_poi_vector"
+START_TIME_COL = "start_time"
 
 # 模型预测目标
 TARGET_COL = "dest_type"
@@ -109,6 +101,15 @@ data = data[
     data[TARGET_COL].isin(TYPE_LIST)
 ].copy()
 
+if START_TIME_COL not in data.columns:
+    raise ValueError(f"缺少 {START_TIME_COL} 列，无法区分工作日和非工作日")
+
+data[START_TIME_COL] = pd.to_datetime(data[START_TIME_COL], errors="coerce")
+invalid_start_times = data[START_TIME_COL].isna().sum()
+if invalid_start_times:
+    print(f"排除 {invalid_start_times} 条出发时间缺失或无效的记录")
+    data = data.dropna(subset=[START_TIME_COL]).copy()
+
 def parse_vector(value):
 
     try:
@@ -147,25 +148,42 @@ data["target"] = (
 )
 
 
-train_data, temp_data = train_test_split(
-    data,
-    test_size=0.30,
-    random_state=RANDOM_STATE,
-    stratify=data["target"]
-)
+def split_rows(rows, holdout_count):
+    if holdout_count == 0:
+        return rows, rows.iloc[:0]
+
+    class_counts = rows["target"].value_counts()
+    can_stratify = (
+        class_counts.min() >= 2
+        and len(class_counts) <= min(holdout_count, len(rows) - holdout_count)
+    )
+    return train_test_split(
+        rows,
+        test_size=holdout_count,
+        random_state=RANDOM_STATE,
+        stratify=rows["target"] if can_stratify else None
+    )
 
 
-val_data, test_data = train_test_split(
-    temp_data,
-    test_size=1/3,
-    random_state=RANDOM_STATE,
-    stratify=temp_data["target"]
-)
+def split_day_group(rows):
+    train_count = round(len(rows) * 0.70)
+    test_count = round(len(rows) * 0.10)
+    group_train, remaining = split_rows(rows, len(rows) - train_count)
+    group_val, group_test = split_rows(remaining, test_count)
+    return group_train, group_val, group_test
 
 
-train_data = train_data.reset_index(drop=True)
-val_data = val_data.reset_index(drop=True)
-test_data = test_data.reset_index(drop=True)
+is_workday = data[START_TIME_COL].dt.dayofweek < 5
+workday_splits = split_day_group(data.loc[is_workday])
+non_workday_splits = split_day_group(data.loc[~is_workday])
+
+train_data, val_data, test_data = [
+    pd.concat([workday_split, non_workday_split], ignore_index=True)
+    for workday_split, non_workday_split in zip(workday_splits, non_workday_splits)
+]
+
+if any(split.empty for split in (train_data, val_data, test_data)):
+    raise ValueError("有效行程数据不足，无法划分出非空的训练集、验证集和测试集")
 
 
 print("\n==============================")
@@ -471,312 +489,26 @@ model.fit(
 )
 
 
-print(
-    "\nXGBoost训练完成"
-)
-
-
-train_pred = model.predict(
-    X_train
-)
-
-train_accuracy = accuracy_score(
-    y_train,
-    train_pred
-)
-
-val_pred = model.predict(
-    X_val
-)
-
-val_accuracy = accuracy_score(
-    y_val,
-    val_pred
-)
-
-y_pred = model.predict(
-    X_test
-)
-
-
-test_accuracy = accuracy_score(
-    y_test,
-    y_pred
-)
-
-
-print(
-    "\n=================================="
-)
-
-print(
-    f"训练集准确率：{train_accuracy:.4f}"
-)
-
-print(
-    f"验证集准确率：{val_accuracy:.4f}"
-)
-
-print(
-    f"最终测试集准确率：{test_accuracy:.4f}"
-)
-
-print(
-    f"最终测试集准确率：{test_accuracy * 100:.2f}%"
-)
-
-print(
-    "=================================="
-)
+y_pred = model.predict(X_test)
 
 report = classification_report(
     y_test,
     y_pred,
-
-    labels=list(
-        range(len(TYPE_LIST))
-    ),
-
+    labels=list(range(len(TYPE_LIST))),
     target_names=TYPE_LIST,
-
     output_dict=True,
-
     zero_division=0
 )
 
-
-metrics_rows = []
-
-
-for class_name in TYPE_LIST:
-
-    metrics_rows.append({
-
-        "类别":
-            class_name,
-
-        "精确率":
-            report[
-                class_name
-            ]["precision"],
-
-        "召回率":
-            report[
-                class_name
-            ]["recall"],
-
-        "F1值":
-            report[
-                class_name
-            ]["f1-score"],
-
-        "样本数":
-            int(
-                report[
-                    class_name
-                ]["support"]
-            )
-    })
-
-
-metrics_df = pd.DataFrame(
-    metrics_rows
-)
-
-
-# 保留两位小数
-metrics_df[
-    [
-        "精确率",
-        "召回率",
-        "F1值"
-    ]
-] = (
-    metrics_df[
-        [
-            "精确率",
-            "召回率",
-            "F1值"
-        ]
-    ]
-    .round(2)
-)
-
-
-print(
-    "\n各类别评价指标：\n"
-)
-
-print(
-    metrics_df.to_string(
-        index=False
-    )
-)
-
-
-
-print(
-    "\n宏平均："
-)
-
-print(
-    f"Precision = "
-    f"{report['macro avg']['precision']:.4f}"
-)
-
-print(
-    f"Recall    = "
-    f"{report['macro avg']['recall']:.4f}"
-)
-
-print(
-    f"F1        = "
-    f"{report['macro avg']['f1-score']:.4f}"
-)
-
-
-print(
-    "\n加权平均："
-)
-
-print(
-    f"Precision = "
-    f"{report['weighted avg']['precision']:.4f}"
-)
-
-print(
-    f"Recall    = "
-    f"{report['weighted avg']['recall']:.4f}"
-)
-
-print(
-    f"F1        = "
-    f"{report['weighted avg']['f1-score']:.4f}"
-)
-
-
-
-
-cm = confusion_matrix(
-    y_test,
-    y_pred,
-    labels=list(
-        range(len(TYPE_LIST))
-    )
-)
-
-
-cm_df = pd.DataFrame(
-    cm,
-    index=TYPE_LIST,
-    columns=TYPE_LIST
-)
-
-
-print(
-    "\n混淆矩阵：\n"
-)
-
-print(
-    cm_df
-)
-
-
-
-
-y_probability = (
-    model.predict_proba(
-        X_test
-    )
-)
-
-
-# 每条样本最大预测概率
-max_probability = (
-    y_probability.max(
-        axis=1
-    )
-)
-
-
-actual_type = [
-    ID_TO_TYPE[
-        int(x)
-    ]
-    for x in y_test
-]
-
-
-predicted_type = [
-    ID_TO_TYPE[
-        int(x)
-    ]
-    for x in y_pred
-]
-
-
-
-
-prediction_result = pd.DataFrame({
-
-    "origin_grid_id":
-        test_data[
-            "origin_grid_id"
-        ].values,
-
-    "origin_type":
-        test_data[
-            "origin_type"
-        ].values,
-
-    "dest_grid_id":
-        test_data[
-            "dest_grid_id"
-        ].values,
-
-    "distance_km":
-        test_data[
-            "distance_km"
-        ].values,
-
-    "实际终点类型":
-        actual_type,
-
-    "预测终点类型":
-        predicted_type,
-
-    "预测概率":
-        max_probability
-})
-
-
-prediction_result[
-    "预测正确"
-] = (
-    prediction_result[
-        "实际终点类型"
-    ]
-    ==
-    prediction_result[
-        "预测终点类型"
-    ]
-)
-
-
-print(
-    "\n预测结果示例：\n"
-)
-
-print(
-    prediction_result.head(
-        20
-    ).to_string(
-        index=False
-    )
-)
-
-
-print(
-    f"最终测试集准确率："
-    f"{test_accuracy * 100:.2f}%"
-)
+metrics_df = pd.DataFrame([
+    {
+        "类别": class_name,
+        "精确率": report[class_name]["precision"],
+        "召回率": report[class_name]["recall"],
+        "F1值": report[class_name]["f1-score"]
+    }
+    for class_name in TYPE_LIST
+])
+
+print(metrics_df.to_string(index=False, float_format="{:.4f}".format))
+print(f"测试集整体准确率：{accuracy_score(y_test, y_pred):.4f}")
