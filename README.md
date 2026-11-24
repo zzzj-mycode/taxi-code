@@ -5,5 +5,5 @@
    
 若想保存代码并预测新数据，将训练的模型保存即可
 出租车数据处理参考： https://gitee.com/ni1o1/pygeo-tutorial
-POI按照分类依据在excel手动更改即可，对照模型的代码输入类型
+POI按照分类依据在excel手动更改即可
 
